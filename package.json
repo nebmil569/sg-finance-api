@@ -1,0 +1,13 @@
+{
+  "name": "sg-finance-api",
+  "version": "1.0.0",
+  "description": "Singapore Finance x402 API — mortgage, property tax, ABSD, forex",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@x402/core": "^2.11.0",
+    "express": "^5.2.1"
+  }
+}
