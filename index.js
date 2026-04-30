@@ -72,6 +72,7 @@ app.get('/health', (req, res) => {
       { path: '/mortgage/compare', method: 'POST', price: '$0.01 USDC', description: 'HDB vs bank mortgage comparison' },
       { path: '/property/absd',   method: 'POST', price: '$0.01 USDC', description: 'ABSD calculator' },
       { path: '/forex/convert',   method: 'GET',  price: 'free',       description: 'SGD↔USD forex rate' },
+      { path: '/salary/benchmark', method: 'POST', price: '$0.01 USDC', description: 'Singapore salary benchmark vs median by age/education/industry' },
     ]
   });
 });
@@ -372,6 +373,78 @@ app.post('/car/loan', (req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Singapore Finance API running on port ${PORT}`);
+});
+
+
+// ── x402 v2 Service Manifest ─────────────────────────────────────────────────
+app.get('/x402.json', (req, res) => {
+  res.json({
+    version: "2",
+    network: "eip155:8453",
+    wallet: process.env.RECEIVING_WALLET || "0x50F9D979b825670A9936D992F5db8AEd9497208A",
+    service: "Singapore Finance x402 API",
+    description: "Singapore financial data API — mortgage, property ABSD, COE, car loans, salary benchmarks. x402 payment via USDC on Base.",
+    endpoints: [
+      { url: "https://workspace-phi-seven-82.vercel.app/mortgage/compare", method: "POST", description: "HDB vs bank mortgage comparison", price_usd: "0.01", pricing: { amount: "10000", currency: "USDC", network: "base" } },
+      { url: "https://workspace-phi-seven-82.vercel.app/property/absd", method: "POST", description: "ABSD calculator", price_usd: "0.01", pricing: { amount: "10000", currency: "USDC", network: "base" } },
+      { url: "https://workspace-phi-seven-82.vercel.app/forex/convert", method: "GET", description: "SGD↔USD forex rate", price_usd: "0", pricing: { amount: "0", currency: "USDC", network: "base" } },
+      { url: "https://workspace-phi-seven-82.vercel.app/salary/benchmark", method: "POST", description: "Singapore salary benchmark vs median by age/education/industry", price_usd: "0.01", pricing: { amount: "10000", currency: "USDC", network: "base" } },
+      { url: "https://workspace-phi-seven-82.vercel.app/coe", method: "POST", description: "All COE categories", price_usd: "0.01", pricing: { amount: "10000", currency: "USDC", network: "base" } },
+      { url: "https://workspace-phi-seven-82.vercel.app/car/loan", method: "POST", description: "Car loan and PARF calculator", price_usd: "0.01", pricing: { amount: "10000", currency: "USDC", network: "base" } }
+    ]
+  });
+});
+
+
+// ── Salary Benchmark ──────────────────────────────────────────────────────────
+app.post('/salary/benchmark', (req, res, next) => {
+  x402Middleware(req, res, next, '0.01');
+}, async (req, res) => {
+  const {
+    occupation = 'general',
+    age = 30,
+    education = 'degree',
+    industry = 'general',
+    current_salary = null
+  } = req.body;
+
+  const medianByAge = {
+    20: 2800, 21: 2900, 22: 3000, 23: 3200, 24: 3400, 25: 3600,
+    26: 3800, 27: 4000, 28: 4200, 29: 4400, 30: 4600, 31: 4800,
+    32: 5000, 33: 5200, 34: 5400, 35: 5500, 36: 5600, 37: 5700,
+    38: 5800, 39: 5900, 40: 6000, 41: 6100, 42: 6200, 43: 6300,
+    44: 6400, 45: 6500, 46: 6550, 47: 6600, 48: 6650, 49: 6700,
+    50: 6750, 51: 6800, 52: 6850, 53: 6900, 54: 6950, 55: 7000
+  };
+  const eduMult = { primary: 0.75, secondary: 0.85, polytechnic: 1.0, degree: 1.35, masters: 1.60, phd: 1.90 };
+  const indMult = { finance: 1.25, technology: 1.15, healthcare: 1.05, manufacturing: 0.95, retail: 0.85, construction: 0.90, general: 1.00 };
+  const occMult = { manager: 1.50, professional: 1.30, technician: 1.05, clerical: 0.90, service: 0.85, general: 1.00 };
+
+  const ageKey = Math.min(Math.max(Math.round(age), 20), 55);
+  const baseMedian = medianByAge[ageKey] || 4500;
+  const estMedian = Math.round(baseMedian * (eduMult[education]||1.0) * (indMult[industry]||1.0) * (occMult[occupation]||1.0));
+
+  let benchmark = null;
+  if (current_salary !== null && !isNaN(current_salary)) {
+    const ratio = current_salary / estMedian;
+    const pct = Math.min(Math.round(ratio * 50), 99);
+    const status = pct >= 75 ? 'above_average' : pct >= 50 ? 'average' : 'below_average';
+    benchmark = {
+      current_monthly: current_salary, current_annual: current_salary * 12,
+      est_median_monthly: estMedian, est_median_annual: estMedian * 12,
+      percentile: pct, status,
+      gap_pct: Math.round((ratio - 1) * 100),
+      advice: pct < 50 ? 'Below median — negotiate or upskill.' : pct < 75 ? 'Above average — competitive.' : 'Top tier — executive/specialist.'
+    };
+  }
+
+  res.json({
+    occupation, age: ageKey, education, industry,
+    est_median_monthly: estMedian, est_median_annual: estMedian * 12,
+    currency: 'SGD', source: 'MOM Singapore Income Summary (approximate)',
+    benchmark,
+    note: 'Estimates vary by employer, role, and economic conditions'
+  });
 });
 
 module.exports = app;
