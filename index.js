@@ -16,6 +16,49 @@ app.use(express.json());
 
 const RECEIVING_WALLET = process.env.RECEIVING_WALLET || '0x50F9D979b825670A9936D992F5db8AEd9497208A';
 const PORT = process.env.PORT || 8000;
+const PRICE_COE = 0.01;
+const PRICE_MORTGAGE = 0.01;
+const PRICE_ABSD = 0.01;
+
+// ── COE CATEGORIES & FALLBACK DATA ─────────────────────────────────────────
+const COE_CATEGORIES = {
+  "A": "Cat A (cars up to 1600cc & 97kW)",
+  "B": "Cat B (cars above 1600cc or 97kW)",
+  "C": "Cat C (goods vehicles & buses)",
+  "D": "Cat D (motorcycles)",
+  "E": "Cat E (open category)",
+};
+
+const KNOWN_COE_PRICES = {
+  "Cat A (cars up to 1600cc & 97kW)": { premium: "$106,000", date: "2026-04", trend: "stable", note: "April 2026 1st bidding" },
+  "Cat B (cars above 1600cc or 97kW)": { premium: "$128,000", date: "2026-04", trend: "rising", note: "April 2026 1st bidding" },
+  "Cat C (goods vehicles & buses)": { premium: "$76,000", date: "2026-04", trend: "stable", note: "April 2026 1st bidding" },
+  "Cat D (motorcycles)": { premium: "$9,801", date: "2026-04", trend: "rising", note: "April 2026 1st bidding" },
+  "Cat E (open category)": { premium: "$130,000", date: "2026-04", trend: "rising", note: "April 2026 1st bidding" },
+};
+
+async function fetchLtaCoe() {
+  const https = require('https');
+  const resourceIds = [
+    'ecda00d4-4dc6-4e90-bd47-070df4575f94',
+    '8da8f2b7-ccb6-4eb5-9477-c0f4d8d3f951',
+  ];
+  for (const rid of resourceIds) {
+    try {
+      const data = await new Promise((resolve, reject) => {
+        const url = `https://data.gov.sg/api/action/datastore_search_json?resource_id=${rid}&limit=10`;
+        https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+          let body = '';
+          res.on('data', d => body += d);
+          res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+        }).on('error', () => resolve(null));
+      });
+      const records = data?.result?.records || [];
+      if (records.length > 0) return records;
+    } catch { continue; }
+  }
+  return null;
+}
 
 // ── FREE ENDPOINTS ──────────────────────────────────────────────────────────
 
@@ -173,6 +216,157 @@ app.post('/property/absd', (req, res, next) => {
                'ABSD may be remitted if selling within 5 years (Sellers Stamp Duty)',
     price_charged: '0.01',
     network: 'Base (eip155:8453)'
+  });
+});
+
+// ── COE ENDPOINTS ─────────────────────────────────────────────────────────────
+
+// GET /coe → 402 Payment Required (must use POST)
+app.get('/coe', (req, res) => {
+  const { status, headers, body } = paymentRequired(PRICE_COE, '/coe');
+  res.set(headers); return res.status(status).json(body);
+});
+
+// POST /coe — all categories ($0.01 USDC)
+app.post('/coe', (req, res, next) => {
+  const check = require('./x402').verifyPayment(req.headers.authorization || '', PRICE_COE);
+  if (!check.valid) {
+    const { status, headers, body } = paymentRequired(PRICE_COE, '/coe');
+    res.set(headers); return res.status(status).json(body);
+  }
+  next();
+}, async (req, res) => {
+  const liveRecords = await fetchLtaCoe();
+  if (liveRecords && liveRecords.length > 0) {
+    const parsed = {};
+    for (const r of liveRecords) {
+      const cat = r.category || '';
+      parsed[cat] = {
+        premium: r.premium || '',
+        date: (r.application_open_date || '').substring(0, 7),
+        trend: 'unknown',
+        note: `as of ${r.application_open_date || 'unknown'}`,
+      };
+    }
+    return res.json({
+      data: {
+        all_categories: parsed,
+        data_source: 'LTA / data.gov.sg (live)',
+        fetched_at: new Date().toISOString(),
+      }
+    });
+  }
+  res.json({
+    data: {
+      all_categories: KNOWN_COE_PRICES,
+      data_source: 'LTA fallback (April 2026 1st bidding exercise)',
+      note: 'Live API unavailable — using latest known COE prices. Next update: May 2026.',
+      fetched_at: new Date().toISOString(),
+    }
+  });
+});
+
+// POST /coe/{category} — single category ($0.01 USDC)
+app.post('/coe/:category', (req, res, next) => {
+  const check = require('./x402').verifyPayment(req.headers.authorization || '', PRICE_COE);
+  if (!check.valid) {
+    const { status, headers, body } = paymentRequired(PRICE_COE, `/coe/${req.params.category}`);
+    res.set(headers); return res.status(status).json(body);
+  }
+  next();
+}, async (req, res) => {
+  const catUpper = req.params.category.toUpperCase();
+  if (!COE_CATEGORIES[catUpper]) {
+    return res.status(400).json({ error: `Invalid category: ${req.params.category}. Valid: A, B, C, D, E` });
+  }
+  const catName = COE_CATEGORIES[catUpper];
+  const liveRecords = await fetchLtaCoe();
+  if (liveRecords && liveRecords.length > 0) {
+    for (const r of liveRecords) {
+      if (r.category === catName || r.category === catUpper) {
+        return res.json({
+          data: {
+            category_code: catUpper,
+            category_name: catName,
+            premium: r.premium || '',
+            date: (r.application_open_date || '').substring(0, 7),
+            data_source: 'LTA / data.gov.sg (live)',
+            fetched_at: new Date().toISOString(),
+          }
+        });
+      }
+    }
+  }
+  const coeData = KNOWN_COE_PRICES[catName] || {};
+  res.json({
+    data: {
+      category_code: catUpper,
+      category_name: catName,
+      premium: coeData.premium || '',
+      date: coeData.date || '',
+      trend: coeData.trend || 'unknown',
+      note: coeData.note || '',
+      data_source: 'LTA fallback (April 2026 1st bidding exercise)',
+      fetched_at: new Date().toISOString(),
+    }
+  });
+});
+
+// ── CAR LOAN ENDPOINT ──────────────────────────────────────────────────────
+
+// POST /car/loan — car loan + PARF calculator ($0.01 USDC)
+app.post('/car/loan', (req, res, next) => {
+  const check = require('./x402').verifyPayment(req.headers.authorization || '', PRICE_COE);
+  if (!check.valid) {
+    const { status, headers, body } = paymentRequired(PRICE_COE, '/car/loan');
+    res.set(headers); return res.status(status).json(body);
+  }
+  next();
+}, (req, res) => {
+  const {
+    vehicle_price = 95000,
+    coe_premium = 95000,
+    down_payment = 10000,
+    loan_tenure_years = 7,
+    interest_rate = 2.98 / 100,
+    vehicle_type = 'sedan',
+    deregistration_age = 10,
+  } = req.body;
+
+  const loan_amount = vehicle_price - down_payment;
+  const monthly_rate = interest_rate / 12;
+  const total_payments = loan_tenure_years * 12;
+  const monthly_installment = (loan_amount * monthly_rate * Math.pow(1 + monthly_rate, total_payments)) /
+    (Math.pow(1 + monthly_rate, total_payments) - 1);
+
+  const total_interest = (monthly_installment * total_payments) - loan_amount;
+  const total_cost = vehicle_price + total_interest;
+
+  // PARF calculation
+  const registration_date = new Date();
+  registration_date.setFullYear(registration_date.getFullYear() - deregistration_age);
+  const age_years = deregistration_age;
+  let parfRebate = 0;
+  if (age_years <= 5) parfRebate = coe_premium * 0.75;
+  else if (age_years <= 7) parfRebate = coe_premium * 0.60;
+  else if (age_years <= 10) parfRebate = coe_premium * 0.50;
+  else parfRebate = 0;
+
+  const dep_value = vehicle_price - (vehicle_price * 0.20 * age_years);
+  const tdsr_limit = (vehicle_price * 0.60) / 12;
+
+  res.json({
+    vehicle_price, coe_premium, down_payment, loan_tenure_years, interest_rate,
+    loan_amount: Math.round(loan_amount),
+    monthly_installment: Math.round(monthly_installment),
+    total_interest: Math.round(total_interest),
+    total_cost: Math.round(total_cost),
+    parf_rebate: Math.round(parfRebate),
+    dep_value_at_dereg: Math.max(0, Math.round(dep_value)),
+    tdsr_limit_monthly: Math.round(tdsr_limit),
+    qualifies_tdsr: monthly_installment <= tdsr_limit,
+    price_charged: '0.01',
+    network: 'Base (eip155:8453)',
   });
 });
 
