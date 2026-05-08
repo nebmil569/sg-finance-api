@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sg-finance-api
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RECEIVING_WALLET
+        value: "0x50F9D979b825670A9936D992F5db8AEd9497208A"

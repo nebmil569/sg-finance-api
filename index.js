@@ -398,7 +398,7 @@ app.get('/x402.json', (req, res) => {
 
 // ── Salary Benchmark ──────────────────────────────────────────────────────────
 app.post('/salary/benchmark', (req, res, next) => {
-  x402Middleware(req, res, next, '0.01');
+  requirePayment(req, res, next, '0.01');
 }, async (req, res) => {
   const {
     occupation = 'general',
