@@ -447,4 +447,46 @@ app.post('/salary/benchmark', (req, res, next) => {
   });
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// x402 Webhook Endpoint
+// Receives payment notifications from x402 protocol (POST only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const webhookEvents = []; // In-memory store (resets on cold start)
+
+app.post('/webhook/x402', async (req, res) => {
+  // x402 POSTs here when a payment succeeds.
+  // Body: { address, event, tx_hash, block_number, chain_id, timestamp }
+  let body;
+  try {
+    body = req.body || {};
+  } catch (_) {
+    body = {};
+  }
+
+  const { address = '', event = '', tx_hash = '', block_number = 0, chain_id = 8453, timestamp = 0 } = body;
+
+  console.log(`[x402-webhook] ${event} | address=${address} tx=${tx_hash} block=${block_number} chain=${chain_id}`);
+
+  // Store recent events (last 50) for audit / dashboard
+  webhookEvents.push({
+    address, event, tx_hash, block_number, chain_id, timestamp,
+    received_at: new Date().toISOString()
+  });
+  if (webhookEvents.length > 50) webhookEvents.shift();
+
+  res.json({ received: true, event, address });
+});
+
+app.get('/webhook/x402', (req, res) => {
+  res.json({ info: 'POST only — x402 will POST payment events here' });
+});
+
+app.get('/webhook/x402/events', (req, res) => {
+  // Debug: recent webhook events
+  const n = parseInt(req.query.limit || '20');
+  res.json(webhookEvents.slice(-n));
+});
+
 module.exports = app;
